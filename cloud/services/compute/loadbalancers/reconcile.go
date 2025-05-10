@@ -66,8 +66,8 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		}
 	}
 
-	// Create a Regional Internal Passthrough Load Balancer if configured
-	if lbType == infrav1.Internal || lbType == infrav1.InternalExternal {
+	// Create a Regional Internal Passthrough Load Balancer or Regional InternalProxy Load Balancer if configured
+	if lbType == infrav1.Internal || lbType == infrav1.InternalExternal || lbType == infrav1.InternalProxy {
 		name := infrav1.InternalRoleTagValue
 		if lbSpec.InternalLoadBalancer != nil {
 			name = ptr.Deref(lbSpec.InternalLoadBalancer.Name, infrav1.InternalRoleTagValue)
@@ -214,8 +214,9 @@ func (s *Service) createExternalLoadBalancer(ctx context.Context, lbType infrav1
 	return nil
 }
 
-// createInternalLoadBalancer creates the components for a Regional Internal Passthrough LoadBalancer.
-// Since this is a passthrough LoadBalancer the TargetTCPProxy resource is not created.
+// createInternalLoadBalancer creates the components for a Regional Internal Passthrough LoadBalancer
+// or Regional Internal Proxy LoadBalancer.
+// TargetTCPProxy resource is created only for Internal Proxy Load Balancer.
 func (s *Service) createInternalLoadBalancer(ctx context.Context, name string, lbType infrav1.LoadBalancerType, instancegroups []*compute.InstanceGroup) error {
 	healthcheck, err := s.createOrGetRegionalHealthCheck(ctx, name)
 	if err != nil {
@@ -235,7 +236,17 @@ func (s *Service) createInternalLoadBalancer(ctx context.Context, name string, l
 		return err
 	}
 	s.scope.Network().APIInternalAddress = ptr.To[string](addr.SelfLink)
-	if lbType == infrav1.Internal {
+
+	// If Load Balancer type is InternalProxy, create a target TCP proxy
+	if lbType == infrav1.InternalProxy {
+		target, err := s.createOrGetTargetTCPProxy(ctx, backendsvc)
+		if err != nil {
+			return err
+		}
+		s.scope.Network().APIServerTargetProxy = ptr.To[string](target.SelfLink)
+	}
+
+	if lbType == infrav1.Internal || lbType == infrav1.InternalExternal || lbType == infrav1.InternalProxy {
 		// If only creating an internal Load Balancer, set the control plane endpoint
 		endpoint := s.scope.ControlPlaneEndpoint()
 		endpoint.Host = addr.Address
@@ -403,13 +414,13 @@ func (s *Service) createOrGetBackendService(ctx context.Context, lbname string, 
 	return backendsvc, nil
 }
 
-// createOrGetRegionalBackendService is used for internal passthrough load balancers.
+// createOrGetRegionalBackendService is used for internal passthrough load balancers and internal proxy load balancers.
 func (s *Service) createOrGetRegionalBackendService(ctx context.Context, lbname string, instancegroups []*compute.InstanceGroup, healthcheck *compute.HealthCheck) (*compute.BackendService, error) {
 	log := log.FromContext(ctx)
 	backends := make([]*compute.Backend, 0, len(instancegroups))
 	for _, group := range instancegroups {
 		be := &compute.Backend{
-			// Always use connection mode for passthrough load balancer
+			// Always use connection mode for passthrough load balancer and internal proxy load balancer.
 			BalancingMode: string(loadBalancingModeConnection),
 			Group:         group.SelfLink,
 		}
@@ -600,8 +611,19 @@ func (s *Service) createOrGetRegionalForwardingRule(ctx context.Context, lbname 
 	spec := s.scope.ForwardingRuleSpec(lbname)
 	spec.LoadBalancingScheme = string(loadBalanceTrafficInternal)
 	spec.Region = s.scope.Region()
-	spec.BackendService = backendSvc.SelfLink
 	lbSpec := s.scope.LoadBalancer()
+	lbType := ptr.Deref(lbSpec.LoadBalancerType, "")
+	if lbType == "" {
+		return nil, errors.New("load balancer type is nil or empty")
+	}
+	switch lbType {
+	case infrav1.Internal:
+		spec.BackendService = backendSvc.SelfLink
+	case infrav1.InternalProxy:
+		spec.Target = ptr.Deref(s.scope.Network().APIServerTargetProxy, "")
+	default:
+		return nil, fmt.Errorf("unsupported load balancer type %q", lbType)
+	}
 	if lbSpec.InternalLoadBalancer != nil && lbSpec.InternalLoadBalancer.InternalAccess == infrav1.InternalAccessGlobal {
 		spec.AllowGlobalAccess = true
 	}

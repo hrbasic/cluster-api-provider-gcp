@@ -162,6 +162,10 @@ var (
 	// Balancer to manage traffic to backends in the configured region.
 	Internal = LoadBalancerType("Internal")
 
+	// InternalProxy creates a Regional Internal Proxy Load
+	// Balancer to manage traffic to backends in the configured region.
+	InternalProxy = LoadBalancerType("InternalProxy")
+
 	// InternalExternal creates both External and Internal Load Balancers to provide
 	// separate endpoints for managing both external and internal traffic.
 	InternalExternal = LoadBalancerType("InternalExternal")
@@ -182,7 +186,8 @@ type LoadBalancerSpec struct {
 	// +optional
 	LoadBalancerType *LoadBalancerType `json:"loadBalancerType,omitempty"`
 
-	// InternalLoadBalancer is the configuration for an Internal Passthrough Network Load Balancer.
+	// InternalLoadBalancer is the configuration for an Internal Passthrough Network Load Balancer
+	// and Internal Proxy Load Balancer.
 	// +optional
 	InternalLoadBalancer *LoadBalancer `json:"internalLoadBalancer,omitempty"`
 }
