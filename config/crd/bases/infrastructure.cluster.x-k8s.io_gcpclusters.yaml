@@ -119,8 +119,9 @@ spec:
                     pattern: (^[1-9][0-9]{0,31}$)|(^[a-z][a-z0-9-]{4,28}[a-z0-9]$)
                     type: string
                   internalLoadBalancer:
-                    description: InternalLoadBalancer is the configuration for an
-                      Internal Passthrough Network Load Balancer.
+                    description: |-
+                      InternalLoadBalancer is the configuration for an Internal Passthrough Network Load Balancer
+                      and Internal Proxy Load Balancer.
                     properties:
                       internalAccess:
                         default: Regional
@@ -152,9 +153,21 @@ spec:
                         type: string
                     type: object
                   loadBalancerType:
+                    default: External
                     description: |-
                       LoadBalancerType defines the type of Load Balancer that should be created.
                       If not set, a Global External Proxy Load Balancer will be created by default.
+
+                      Possible values:
+                        "External" - Global External Proxy Load Balancer.
+                        "Internal" - Regional Internal Passthrough Load Balancer.
+                        "InternalProxy" - Regional Internal Proxy Load Balancer.
+                        "InternalExternal" - Both External and Internal Load Balancers.
+                    enum:
+                    - External
+                    - Internal
+                    - InternalProxy
+                    - InternalExternal
                     type: string
                 type: object
               network:

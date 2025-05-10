@@ -183,6 +183,14 @@ type LoadBalancerSpec struct {
 
 	// LoadBalancerType defines the type of Load Balancer that should be created.
 	// If not set, a Global External Proxy Load Balancer will be created by default.
+	//
+	// Possible values:
+	//   "External" - Global External Proxy Load Balancer.
+	//   "Internal" - Regional Internal Passthrough Load Balancer.
+	//   "InternalProxy" - Regional Internal Proxy Load Balancer.
+	//   "InternalExternal" - Both External and Internal Load Balancers.
+	// +kubebuilder:validation:Enum=External;Internal;InternalProxy;InternalExternal
+	// +kubebuilder:default=External
 	// +optional
 	LoadBalancerType *LoadBalancerType `json:"loadBalancerType,omitempty"`
 
