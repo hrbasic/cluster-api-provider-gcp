@@ -36,6 +36,7 @@ import (
 )
 
 var lbTypeInternal = infrav1.Internal
+var lbTypeInternalProxy = infrav1.InternalProxy
 
 func init() {
 	_ = clusterv1.AddToScheme(scheme.Scheme)
@@ -780,6 +781,7 @@ func TestService_createOrGetRegionalForwardingRule(t *testing.T) {
 		name               string
 		scope              func(s *scope.ClusterScope) Scope
 		lbName             string
+		lbType             infrav1.LoadBalancerType
 		backendService     *compute.BackendService
 		targetTcpproxy     *compute.TargetTcpProxy
 		address            *compute.Address
@@ -833,7 +835,7 @@ func TestService_createOrGetRegionalForwardingRule(t *testing.T) {
 			s.regionalforwardingrules = tt.mockForwardingRule
 			var fwdRule *compute.ForwardingRule
 			s.subnets = tt.mockSubnetworks
-			fwdRule, err = s.createOrGetRegionalForwardingRule(ctx, tt.lbName, tt.backendService, tt.address)
+			fwdRule, err = s.createOrGetRegionalForwardingRule(ctx, tt.lbName, infrav1.Internal, tt.backendService, tt.address)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Service s.createOrGetRegionalForwardingRule() error = %v, wantErr %v", err, tt.wantErr)
 				return

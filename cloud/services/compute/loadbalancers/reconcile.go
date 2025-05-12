@@ -92,12 +92,12 @@ func (s *Service) Delete(ctx context.Context) error {
 		}
 	}
 
-	if lbType == infrav1.Internal || lbType == infrav1.InternalExternal {
+	if lbType == infrav1.Internal || lbType == infrav1.InternalExternal || lbType == infrav1.InternalProxy {
 		name := infrav1.InternalRoleTagValue
 		if lbSpec.InternalLoadBalancer != nil {
 			name = ptr.Deref(lbSpec.InternalLoadBalancer.Name, infrav1.InternalRoleTagValue)
 		}
-		if err := s.deleteInternalLoadBalancer(ctx, name); err != nil {
+		if err := s.deleteInternalLoadBalancer(ctx, name, lbType); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}
@@ -141,7 +141,7 @@ func (s *Service) deleteExternalLoadBalancer(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) deleteInternalLoadBalancer(ctx context.Context, name string) error {
+func (s *Service) deleteInternalLoadBalancer(ctx context.Context, name string, lbType infrav1.LoadBalancerType) error {
 	log := log.FromContext(ctx)
 	log.Info("Deleting internal loadbalancer resources")
 	if err := s.deleteRegionalForwardingRule(ctx, name); err != nil {
@@ -153,6 +153,13 @@ func (s *Service) deleteInternalLoadBalancer(ctx context.Context, name string) e
 		return fmt.Errorf("deleting InternalAddress: %w", err)
 	}
 	s.scope.Network().APIInternalAddress = nil
+
+	if lbType == infrav1.InternalProxy {
+		if err := s.deleteRegionalTargetTCPProxy(ctx); err != nil {
+			return fmt.Errorf("deleting TargetTCPProxy: %w", err)
+		}
+		s.scope.Network().APIServerTargetProxy = nil
+	}
 
 	if err := s.deleteRegionalBackendService(ctx, name); err != nil {
 		return fmt.Errorf("deleting RegionalBackendService: %w", err)
@@ -215,7 +222,7 @@ func (s *Service) createExternalLoadBalancer(ctx context.Context, lbType infrav1
 }
 
 // createInternalLoadBalancer creates the components for a Regional Internal Passthrough LoadBalancer
-// or Regional Internal Proxy LoadBalancer.
+// and Regional Internal Proxy LoadBalancer.
 // TargetTCPProxy resource is created only for Internal Proxy Load Balancer.
 func (s *Service) createInternalLoadBalancer(ctx context.Context, name string, lbType infrav1.LoadBalancerType, instancegroups []*compute.InstanceGroup) error {
 	healthcheck, err := s.createOrGetRegionalHealthCheck(ctx, name)
@@ -237,9 +244,9 @@ func (s *Service) createInternalLoadBalancer(ctx context.Context, name string, l
 	}
 	s.scope.Network().APIInternalAddress = ptr.To[string](addr.SelfLink)
 
-	// If Load Balancer type is InternalProxy, create a target TCP proxy
+	// If Load Balancer type is InternalProxy, create a regional target TCP proxy
 	if lbType == infrav1.InternalProxy {
-		target, err := s.createOrGetTargetTCPProxy(ctx, backendsvc)
+		target, err := s.createOrGetRegionalTargetTCPProxy(ctx, backendsvc)
 		if err != nil {
 			return err
 		}
@@ -254,7 +261,7 @@ func (s *Service) createInternalLoadBalancer(ctx context.Context, name string, l
 	}
 
 	// Create a regional forwarding rule to the backend service
-	forwarding, err := s.createOrGetRegionalForwardingRule(ctx, name, backendsvc, addr)
+	forwarding, err := s.createOrGetRegionalForwardingRule(ctx, name, lbType, backendsvc, addr)
 	if err != nil {
 		return err
 	}
@@ -497,6 +504,35 @@ func (s *Service) createOrGetTargetTCPProxy(ctx context.Context, service *comput
 	return target, nil
 }
 
+// createOrGetRegionalTargetTCPProxy is used for internal proxy load balancers.
+func (s *Service) createOrGetRegionalTargetTCPProxy(ctx context.Context, service *compute.BackendService) (*compute.TargetTcpProxy, error) {
+	log := log.FromContext(ctx)
+	targetSpec := s.scope.TargetTCPProxySpec()
+	targetSpec.Service = service.SelfLink
+	targetSpec.Region = s.scope.Region()
+	key := meta.RegionalKey(targetSpec.Name, s.scope.Region())
+	target, err := s.targettcpproxies.Get(ctx, key)
+	if err != nil {
+		if !gcperrors.IsNotFound(err) {
+			log.Error(err, "Error looking for regional targettcpproxy", "name", targetSpec.Name)
+			return nil, err
+		}
+
+		log.V(2).Info("Creating a targettcpproxy", "name", targetSpec.Name)
+		if err := s.targettcpproxies.Insert(ctx, key, targetSpec); err != nil {
+			log.Error(err, "Error creating a regional targettcpproxy", "name", targetSpec.Name)
+			return nil, err
+		}
+
+		target, err = s.targettcpproxies.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return target, nil
+}
+
 // createOrGetAddress is used to obtain a Global address.
 func (s *Service) createOrGetAddress(ctx context.Context, lbname string) (*compute.Address, error) {
 	log := log.FromContext(ctx)
@@ -606,18 +642,16 @@ func (s *Service) createOrGetForwardingRule(ctx context.Context, lbname string, 
 }
 
 // createOrGetRegionalForwardingRule is used to obtain a Regional ForwardingRule.
-func (s *Service) createOrGetRegionalForwardingRule(ctx context.Context, lbname string, backendSvc *compute.BackendService, addr *compute.Address) (*compute.ForwardingRule, error) {
+func (s *Service) createOrGetRegionalForwardingRule(ctx context.Context, lbname string, lbType infrav1.LoadBalancerType, backendSvc *compute.BackendService, addr *compute.Address) (*compute.ForwardingRule, error) {
 	log := log.FromContext(ctx)
 	spec := s.scope.ForwardingRuleSpec(lbname)
 	spec.LoadBalancingScheme = string(loadBalanceTrafficInternal)
 	spec.Region = s.scope.Region()
 	lbSpec := s.scope.LoadBalancer()
-	lbType := ptr.Deref(lbSpec.LoadBalancerType, "")
-	if lbType == "" {
-		return nil, errors.New("load balancer type is nil or empty")
-	}
 	switch lbType {
 	case infrav1.Internal:
+		spec.BackendService = backendSvc.SelfLink
+	case infrav1.InternalExternal:
 		spec.BackendService = backendSvc.SelfLink
 	case infrav1.InternalProxy:
 		spec.Target = ptr.Deref(s.scope.Network().APIServerTargetProxy, "")
@@ -740,6 +774,18 @@ func (s *Service) deleteTargetTCPProxy(ctx context.Context) error {
 		return err
 	}
 
+	return nil
+}
+
+func (s *Service) deleteRegionalTargetTCPProxy(ctx context.Context) error {
+	log := log.FromContext(ctx)
+	spec := s.scope.TargetTCPProxySpec()
+	key := meta.RegionalKey(spec.Name, s.scope.Region())
+	log.V(2).Info("Deleting a regional targettcpproxy", "name", spec.Name)
+	if err := s.targettcpproxies.Delete(ctx, key); err != nil && !gcperrors.IsNotFound(err) {
+		log.Error(err, "Error deleting a regional targettcpproxy", "name", spec.Name)
+		return err
+	}
 	return nil
 }
 
