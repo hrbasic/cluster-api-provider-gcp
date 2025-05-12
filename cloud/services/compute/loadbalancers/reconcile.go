@@ -509,7 +509,6 @@ func (s *Service) createOrGetRegionalTargetTCPProxy(ctx context.Context, service
 	log := log.FromContext(ctx)
 	targetSpec := s.scope.TargetTCPProxySpec()
 	targetSpec.Service = service.SelfLink
-	targetSpec.Region = s.scope.Region()
 	key := meta.RegionalKey(targetSpec.Name, s.scope.Region())
 	target, err := s.targettcpproxies.Get(ctx, key)
 	if err != nil {
@@ -518,7 +517,7 @@ func (s *Service) createOrGetRegionalTargetTCPProxy(ctx context.Context, service
 			return nil, err
 		}
 
-		log.V(2).Info("Creating a targettcpproxy", "name", targetSpec.Name)
+		log.V(2).Info("Creating a regional targettcpproxy", "name", targetSpec.Name)
 		if err := s.targettcpproxies.Insert(ctx, key, targetSpec); err != nil {
 			log.Error(err, "Error creating a regional targettcpproxy", "name", targetSpec.Name)
 			return nil, err
