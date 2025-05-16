@@ -43,6 +43,11 @@ const (
 	// only mode available for passthrough Load Balancers.
 	loadBalancingModeConnection = loadBalancingMode("CONNECTION")
 
+	// Load Balancer is implemented as a managed service. Requests are routed
+	// either to the GFE or to the Envoy proxy. This is
+	// only mode available for Internal Proxy Load Balancers.
+	loadBalancingModeInternalManaged = loadBalancingMode("INTERNAL_MANAGED")
+
 	loadBalanceTrafficInternal = "INTERNAL"
 )
 
@@ -438,7 +443,7 @@ func (s *Service) createOrGetRegionalBackendService(ctx context.Context, lbname 
 	backendsvcSpec.Backends = backends
 	backendsvcSpec.HealthChecks = []string{healthcheck.SelfLink}
 	backendsvcSpec.Region = s.scope.Region()
-	backendsvcSpec.LoadBalancingScheme = string(loadBalanceTrafficInternal)
+	backendsvcSpec.LoadBalancingScheme = s.getLoadBalancingMode()
 	backendsvcSpec.PortName = ""
 	network := s.scope.Network()
 	if network.SelfLink != nil {
@@ -509,6 +514,7 @@ func (s *Service) createOrGetRegionalTargetTCPProxy(ctx context.Context, service
 	log := log.FromContext(ctx)
 	targetSpec := s.scope.TargetTCPProxySpec()
 	targetSpec.Service = service.SelfLink
+	targetSpec.Region = s.scope.Region()
 	key := meta.RegionalKey(targetSpec.Name, s.scope.Region())
 	target, err := s.targettcpproxies.Get(ctx, key)
 	if err != nil {
@@ -644,7 +650,7 @@ func (s *Service) createOrGetForwardingRule(ctx context.Context, lbname string, 
 func (s *Service) createOrGetRegionalForwardingRule(ctx context.Context, lbname string, lbType infrav1.LoadBalancerType, backendSvc *compute.BackendService, addr *compute.Address) (*compute.ForwardingRule, error) {
 	log := log.FromContext(ctx)
 	spec := s.scope.ForwardingRuleSpec(lbname)
-	spec.LoadBalancingScheme = string(loadBalanceTrafficInternal)
+	spec.LoadBalancingScheme = s.getLoadBalancingMode()
 	spec.Region = s.scope.Region()
 	lbSpec := s.scope.LoadBalancer()
 	switch lbType {
@@ -886,4 +892,21 @@ func (s *Service) getSubnet(ctx context.Context) (*compute.Subnetwork, error) {
 	}
 
 	return nil, errors.New("could not find subnet")
+}
+
+// getLoadBalancingMode returns the load balancing mode based on the LoadBalancerType.
+// If LoadBalancerType is not set, it defaults to Utilization.
+func (s *Service) getLoadBalancingMode() string {
+	lbSpec := s.scope.LoadBalancer()
+	if lbSpec.LoadBalancerType == nil {
+		return string(loadBalancingModeUtilization)
+	}
+	switch *lbSpec.LoadBalancerType {
+	case infrav1.Internal:
+		return string(loadBalanceTrafficInternal)
+	case infrav1.InternalProxy:
+		return string(loadBalancingModeInternalManaged)
+	default:
+		return string(loadBalancingModeUtilization)
+	}
 }
