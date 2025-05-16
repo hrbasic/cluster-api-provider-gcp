@@ -43,10 +43,7 @@ const (
 	// only mode available for passthrough Load Balancers.
 	loadBalancingModeConnection = loadBalancingMode("CONNECTION")
 
-	// Load Balancer is implemented as a managed service. Requests are routed
-	// either to the GFE or to the Envoy proxy. This is
-	// only mode available for Internal Proxy Load Balancers.
-	loadBalancingModeInternalManaged = loadBalancingMode("INTERNAL_MANAGED")
+	loadBalanceTrafficInternalManaged = "INTERNAL_MANAGED"
 
 	loadBalanceTrafficInternal = "INTERNAL"
 )
@@ -236,7 +233,7 @@ func (s *Service) createInternalLoadBalancer(ctx context.Context, name string, l
 	}
 	s.scope.Network().APIInternalHealthCheck = ptr.To[string](healthcheck.SelfLink)
 
-	backendsvc, err := s.createOrGetRegionalBackendService(ctx, name, instancegroups, healthcheck)
+	backendsvc, err := s.createOrGetRegionalBackendService(ctx, name, lbType, instancegroups, healthcheck)
 	if err != nil {
 		return err
 	}
@@ -427,7 +424,7 @@ func (s *Service) createOrGetBackendService(ctx context.Context, lbname string, 
 }
 
 // createOrGetRegionalBackendService is used for internal passthrough load balancers and internal proxy load balancers.
-func (s *Service) createOrGetRegionalBackendService(ctx context.Context, lbname string, instancegroups []*compute.InstanceGroup, healthcheck *compute.HealthCheck) (*compute.BackendService, error) {
+func (s *Service) createOrGetRegionalBackendService(ctx context.Context, lbname string, lbType infrav1.LoadBalancerType, instancegroups []*compute.InstanceGroup, healthcheck *compute.HealthCheck) (*compute.BackendService, error) {
 	log := log.FromContext(ctx)
 	backends := make([]*compute.Backend, 0, len(instancegroups))
 	for _, group := range instancegroups {
@@ -443,7 +440,11 @@ func (s *Service) createOrGetRegionalBackendService(ctx context.Context, lbname 
 	backendsvcSpec.Backends = backends
 	backendsvcSpec.HealthChecks = []string{healthcheck.SelfLink}
 	backendsvcSpec.Region = s.scope.Region()
-	backendsvcSpec.LoadBalancingScheme = s.getLoadBalancingMode()
+	if lbType == infrav1.Internal || lbType == infrav1.InternalExternal {
+		backendsvcSpec.LoadBalancingScheme = loadBalanceTrafficInternal
+	} else {
+		backendsvcSpec.LoadBalancingScheme = loadBalanceTrafficInternalManaged
+	}
 	backendsvcSpec.PortName = ""
 	network := s.scope.Network()
 	if network.SelfLink != nil {
@@ -650,19 +651,16 @@ func (s *Service) createOrGetForwardingRule(ctx context.Context, lbname string, 
 func (s *Service) createOrGetRegionalForwardingRule(ctx context.Context, lbname string, lbType infrav1.LoadBalancerType, backendSvc *compute.BackendService, addr *compute.Address) (*compute.ForwardingRule, error) {
 	log := log.FromContext(ctx)
 	spec := s.scope.ForwardingRuleSpec(lbname)
-	spec.LoadBalancingScheme = s.getLoadBalancingMode()
 	spec.Region = s.scope.Region()
 	lbSpec := s.scope.LoadBalancer()
-	switch lbType {
-	case infrav1.Internal:
+	if lbType == infrav1.Internal || lbType == infrav1.InternalExternal {
 		spec.BackendService = backendSvc.SelfLink
-	case infrav1.InternalExternal:
-		spec.BackendService = backendSvc.SelfLink
-	case infrav1.InternalProxy:
+		spec.LoadBalancingScheme = loadBalanceTrafficInternal
+	} else {
 		spec.Target = ptr.Deref(s.scope.Network().APIServerTargetProxy, "")
-	default:
-		return nil, fmt.Errorf("unsupported load balancer type %q", lbType)
+		spec.LoadBalancingScheme = loadBalanceTrafficInternalManaged
 	}
+
 	if lbSpec.InternalLoadBalancer != nil && lbSpec.InternalLoadBalancer.InternalAccess == infrav1.InternalAccessGlobal {
 		spec.AllowGlobalAccess = true
 	}
@@ -892,21 +890,4 @@ func (s *Service) getSubnet(ctx context.Context) (*compute.Subnetwork, error) {
 	}
 
 	return nil, errors.New("could not find subnet")
-}
-
-// getLoadBalancingMode returns the load balancing mode based on the LoadBalancerType.
-// If LoadBalancerType is not set, it defaults to Utilization.
-func (s *Service) getLoadBalancingMode() string {
-	lbSpec := s.scope.LoadBalancer()
-	if lbSpec.LoadBalancerType == nil {
-		return string(loadBalancingModeUtilization)
-	}
-	switch *lbSpec.LoadBalancerType {
-	case infrav1.Internal:
-		return string(loadBalanceTrafficInternal)
-	case infrav1.InternalProxy:
-		return string(loadBalancingModeInternalManaged)
-	default:
-		return string(loadBalancingModeUtilization)
-	}
 }
