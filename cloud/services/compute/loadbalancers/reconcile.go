@@ -429,9 +429,14 @@ func (s *Service) createOrGetRegionalBackendService(ctx context.Context, lbname 
 	backends := make([]*compute.Backend, 0, len(instancegroups))
 	for _, group := range instancegroups {
 		be := &compute.Backend{
-			// Always use connection mode for passthrough load balancer and internal proxy load balancer.
+			// Always use connection mode for passthrough load balancer.
 			BalancingMode: string(loadBalancingModeConnection),
 			Group:         group.SelfLink,
+		}
+		if loadBalancingMode(be.BalancingMode) == loadBalancingModeConnection {
+			// Set max connections to a reasonable limit based
+			// on database max connections https://cloud.google.com/sql/docs/postgres/flags#postgres-m
+			be.MaxConnections = 1000
 		}
 		backends = append(backends, be)
 	}
@@ -447,7 +452,7 @@ func (s *Service) createOrGetRegionalBackendService(ctx context.Context, lbname 
 	}
 	backendsvcSpec.PortName = ""
 	network := s.scope.Network()
-	if network.SelfLink != nil {
+	if network.SelfLink != nil && backendsvcSpec.LoadBalancingScheme == loadBalanceTrafficInternal {
 		backendsvcSpec.Network = *network.SelfLink
 	}
 
